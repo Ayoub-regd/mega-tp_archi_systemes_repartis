@@ -1,0 +1,9 @@
+vip_ip: "192.168.56.100"
+vip_cidr_netmask: 24
+cluster_name: ha_cluster
+hacluster_password: "MegaTP-HaCluster-2025!"
+nginx_service_name: nginx
+samba_service_name: smb
+
+samba_share_name: public
+samba_share_path: /srv/samba/public

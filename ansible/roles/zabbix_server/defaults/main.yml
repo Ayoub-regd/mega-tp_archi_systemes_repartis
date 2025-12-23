@@ -1,0 +1,4 @@
+zabbix_release_pkg: "https://repo.zabbix.com/zabbix/6.0/ubuntu/pool/main/z/zabbix-release/zabbix-release_6.0-4+ubuntu22.04_all.deb"
+zabbix_db_name: zabbix
+zabbix_db_user: zabbix
+zabbix_db_password: "MegaTP-Zabbix-2025!"

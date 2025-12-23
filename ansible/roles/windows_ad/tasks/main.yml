@@ -1,0 +1,296 @@
+- name: Installer les rôles AD DS + DNS
+  ansible.windows.win_feature:
+    name:
+      - AD-Domain-Services
+      - DNS
+    state: present
+    # Important: inclure les "management tools" peut déclencher des installations longues/non déterministes
+    # (selon l'image, les sources de features et l'état Windows Update). On les gère explicitement plus bas si besoin.
+    include_management_tools: false
+  register: ad_features
+
+- name: Redémarrer après installation des rôles (si nécessaire)
+  ansible.windows.win_reboot:
+    reboot_timeout: 7200
+  when: ad_features.reboot_required | default(false)
+
+- name: Attendre WinRM après reboot (rôles AD/DNS)
+  ansible.builtin.wait_for_connection:
+    timeout: 1800
+  when: ad_features.reboot_required | default(false)
+
+- name: Vérifier si le domaine est déjà configuré
+  ansible.windows.win_shell: |
+    try {
+      Import-Module ActiveDirectory
+      $d = Get-ADDomain -Identity "{{ domain_name }}" -ErrorAction Stop
+      Write-Output "domain_exists:$($d.DNSRoot)"
+    } catch {
+      Write-Output "domain_missing"
+    }
+  register: domain_check
+  changed_when: false
+
+- name: Créer le domaine (nouvelle forêt) si nécessaire
+  ansible.windows.win_domain:
+    dns_domain_name: "{{ domain_name }}"
+    domain_netbios_name: "{{ domain_netbios_name }}"
+    safe_mode_password: "{{ domain_safe_mode_password }}"
+    install_dns: true
+    database_path: C:\\Windows\\NTDS
+    log_path: C:\\Windows\\NTDS
+    sysvol_path: C:\\Windows\\SYSVOL
+  register: domain_install
+  when: "'domain_missing' in (domain_check.stdout | default(''))"
+
+- name: Redémarrer si nécessaire (création du domaine)
+  ansible.windows.win_reboot:
+    reboot_timeout: 7200
+  when: domain_install.reboot_required | default(false)
+
+- name: Attendre WinRM après reboot (création du domaine)
+  ansible.builtin.wait_for_connection:
+    timeout: 1800
+  when: domain_install.reboot_required | default(false)
+
+- name: Attendre que le domaine soit opérationnel (cmdlets AD)
+  ansible.windows.win_shell: |
+    Import-Module ActiveDirectory
+    (Get-ADDomain -Identity "{{ domain_name }}").DNSRoot
+  register: ad_ready
+  retries: 30
+  delay: 10
+  until: ad_ready.rc == 0
+  changed_when: false
+
+- name: Garantir les droits Schema/Enterprise Admins pour LAPS (lab)
+  ansible.windows.win_shell: |
+    net group "Domain Admins" vagrant /add /domain
+    net group "Schema Admins" vagrant /add /domain
+    net group "Enterprise Admins" vagrant /add /domain
+    exit 0
+  changed_when: false
+
+- name: Étendre le schéma AD pour Windows LAPS (si non présent)
+  ansible.windows.win_shell: |
+    Import-Module ActiveDirectory
+    $schemaNc = (Get-ADRootDSE).schemaNamingContext
+    $existing = Get-ADObject -SearchBase $schemaNc -LDAPFilter '(lDAPDisplayName=msLAPS-PasswordExpirationTime)' -ErrorAction SilentlyContinue
+    if (-not $existing) {
+      Update-LapsADSchema -Confirm:$false
+      $existing = Get-ADObject -SearchBase $schemaNc -LDAPFilter '(lDAPDisplayName=msLAPS-PasswordExpirationTime)' -ErrorAction SilentlyContinue
+      if (-not $existing) {
+        throw "LAPS schema update did not create msLAPS-PasswordExpirationTime"
+      }
+      Write-Output 'laps_schema_updated'
+    } else {
+      Write-Output 'laps_schema_already_present'
+    }
+  register: laps_schema
+  changed_when: "'laps_schema_updated' in laps_schema.stdout"
+
+- name: Créer une OU dédiée LAPS et déléguer les droits
+  ansible.windows.win_shell: |
+    Import-Module ActiveDirectory
+    $dn = ("{{ domain_name }}".Split('.') | ForEach-Object { "DC=$_" }) -join ','
+    $ouName = "LAPS"
+    $ou = Get-ADOrganizationalUnit -LDAPFilter "(ou=$ouName)" -SearchBase $dn -ErrorAction SilentlyContinue
+    if (-not $ou) {
+      New-ADOrganizationalUnit -Name $ouName -Path $dn -ProtectedFromAccidentalDeletion:$false -ErrorAction Stop | Out-Null
+      $ou = Get-ADOrganizationalUnit -LDAPFilter "(ou=$ouName)" -SearchBase $dn -ErrorAction Stop
+      Write-Output "ou_created:$($ou.DistinguishedName)"
+    } else {
+      Write-Output "ou_exists:$($ou.DistinguishedName)"
+    }
+
+    $ouDn = $ou.DistinguishedName
+    if (-not $ouDn) { throw "OU DN is empty" }
+
+    Set-LapsADComputerSelfPermission -Identity $ouDn
+    Set-LapsADReadPasswordPermission -Identity $ouDn -AllowedPrincipals "Domain Admins"
+    Set-LapsADResetPasswordPermission -Identity $ouDn -AllowedPrincipals "Domain Admins"
+  changed_when: false
+
+- name: Créer et lier une GPO LAPS (paramètres de base)
+  ansible.windows.win_shell: |
+    $ErrorActionPreference = "Stop"
+    Import-Module GroupPolicy
+
+    $gpoName = "MEGATP - LAPS"
+    $domainDns = "{{ domain_name }}"
+    $domainDn = ($domainDns.Split('.') | ForEach-Object { "DC=$_" }) -join ','
+    $key = "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\LAPS"
+
+    function Set-GpoRegistryValueSafe {
+      param(
+        [string]$GpoName,
+        [string]$Key,
+        [string]$ValueName,
+        [string]$Type,
+        [object]$Value,
+        [int]$MaxAttempts = 10,
+        [int]$TimeoutSec = 60
+      )
+
+      for ($attempt = 1; $attempt -le $MaxAttempts; $attempt++) {
+        $job = Start-Job -ScriptBlock {
+          param($gpoName, $key, $valueName, $type, $value)
+          $ErrorActionPreference = "Stop"
+          Import-Module GroupPolicy
+          Set-GPRegistryValue -Name $gpoName -Key $key -ValueName $valueName -Type $type -Value $value | Out-Null
+        } -ArgumentList $GpoName, $Key, $ValueName, $Type, $Value
+
+        $completed = Wait-Job -Job $job -Timeout $TimeoutSec
+        if (-not $completed) {
+          Stop-Job -Job $job -Force -ErrorAction SilentlyContinue | Out-Null
+          Remove-Job -Job $job -Force -ErrorAction SilentlyContinue | Out-Null
+
+          if ($attempt -ge $MaxAttempts) {
+            throw "Timeout en appliquant la clé GPO '$ValueName' (>${TimeoutSec}s, $MaxAttempts tentatives)."
+          }
+
+          Start-Sleep -Seconds 5
+          continue
+        }
+
+        try {
+          Receive-Job -Job $job -ErrorAction Stop | Out-Null
+          Remove-Job -Job $job -Force -ErrorAction SilentlyContinue | Out-Null
+          return
+        } catch {
+          Remove-Job -Job $job -Force -ErrorAction SilentlyContinue | Out-Null
+          if ($_.Exception.Message -match "Access is denied" -and $attempt -lt $MaxAttempts) {
+            Start-Sleep -Seconds 5
+            continue
+          }
+          throw
+        }
+      }
+    }
+
+    function Get-GpoRegistryValue {
+      param([string]$GpoName, [string]$Key, [string]$ValueName)
+      try {
+        return (Get-GPRegistryValue -Name $GpoName -Key $Key -ValueName $ValueName -ErrorAction Stop).Value
+      } catch {
+        return $null
+      }
+    }
+
+    $changed = $false
+
+    $gpo = Get-GPO -Name $gpoName -ErrorAction SilentlyContinue
+    if (-not $gpo) {
+      $gpo = New-GPO -Name $gpoName
+      Write-Output "gpo_created"
+      $changed = $true
+    } else {
+      Write-Output "gpo_exists"
+    }
+
+    $links = (Get-GPInheritance -Target $domainDn).GpoLinks | Select-Object -ExpandProperty DisplayName
+    if ($links -notcontains $gpoName) {
+      New-GPLink -Name $gpoName -Target $domainDn | Out-Null
+      Write-Output "gpo_linked"
+      $changed = $true
+    } else {
+      Write-Output "gpo_already_linked"
+    }
+
+    # Sur un DC fraîchement promu, le GPT de la GPO peut ne pas être immédiatement prêt dans SYSVOL.
+    $gpoGuid = $gpo.Id.ToString("B").ToUpper()
+    $gptPath = "C:\Windows\SYSVOL\sysvol\$domainDns\Policies\$gpoGuid"
+    for ($i = 1; $i -le 120; $i++) {
+      if (Test-Path -LiteralPath $gptPath) { break }
+      Start-Sleep -Seconds 2
+    }
+    if (-not (Test-Path -LiteralPath $gptPath)) {
+      throw "SYSVOL/GPT non prêt pour la GPO '$gpoName' (attendu: $gptPath)"
+    }
+
+    $settings = @(
+      @{ Name = "BackupDirectory"; Type = "DWord"; Value = 2 },
+      @{ Name = "PasswordComplexity"; Type = "DWord"; Value = 4 },
+      @{ Name = "PasswordLength"; Type = "DWord"; Value = 14 },
+      @{ Name = "PasswordAgeDays"; Type = "DWord"; Value = 30 },
+      @{ Name = "AdministratorAccountName"; Type = "String"; Value = "Administrator" }
+    )
+
+    foreach ($s in $settings) {
+      $current = Get-GpoRegistryValue -GpoName $gpoName -Key $key -ValueName $s.Name
+      if ($current -ne $s.Value) {
+        Set-GpoRegistryValueSafe -GpoName $gpoName -Key $key -ValueName $s.Name -Type $s.Type -Value $s.Value
+        Write-Output "gpo_value_set:$($s.Name)"
+        $changed = $true
+      } else {
+        Write-Output "gpo_value_ok:$($s.Name)"
+      }
+    }
+
+    if ($changed) { Write-Output "gpo_changed" }
+  register: laps_gpo
+  changed_when: "'gpo_changed' in (laps_gpo.stdout | default(''))"
+
+- name: Politique mot de passe stricte (domaine)
+  ansible.windows.win_shell: |
+    Import-Module ActiveDirectory
+    $domain = "{{ domain_name }}"
+    Set-ADDefaultDomainPasswordPolicy -Identity $domain `
+      -MinPasswordLength 12 `
+      -ComplexityEnabled $true `
+      -PasswordHistoryCount 5 `
+      -MaxPasswordAge (New-TimeSpan -Days 90) `
+      -MinPasswordAge (New-TimeSpan -Days 1)
+  changed_when: false
+
+- name: Désactiver le compte Invité (Guest) du domaine
+  ansible.windows.win_shell: |
+    Import-Module ActiveDirectory
+    $guest = Get-ADUser -Filter "SamAccountName -eq 'Guest'" -ErrorAction SilentlyContinue
+    if ($guest) { Disable-ADAccount -Identity $guest }
+  changed_when: false
+
+- name: Désactiver SMBv1 (serveur)
+  ansible.windows.win_shell: |
+    $cfg = Get-SmbServerConfiguration
+    if ($cfg.EnableSMB1Protocol -eq $true) {
+      Set-SmbServerConfiguration -EnableSMB1Protocol $false -Force
+      Write-Output "smb1_disabled"
+    } else {
+      Write-Output "smb1_already_disabled"
+    }
+  register: smb1_disable
+  changed_when: "'smb1_disabled' in smb1_disable.stdout"
+
+- name: Garantir la regle firewall WinRM (lab, avant durcissement)
+  ansible.windows.win_shell: |
+    $ruleName = "MegaTP WinRM"
+    $existing = Get-NetFirewallRule -DisplayName $ruleName -ErrorAction SilentlyContinue
+    if (-not $existing) {
+      New-NetFirewallRule -DisplayName $ruleName -Direction Inbound -Action Allow -Protocol TCP -LocalPort 5985,5986 -RemoteAddress 192.168.56.0/24 -Profile Domain,Private,Public | Out-Null
+      Write-Output "winrm_rule_created"
+    } else {
+      Set-NetFirewallRule -DisplayName $ruleName -Enabled True -Profile Domain,Private,Public | Out-Null
+      Write-Output "winrm_rule_exists"
+    }
+  register: winrm_rule
+  changed_when: "'winrm_rule_created' in (winrm_rule.stdout | default(''))"
+
+- name: Désactiver LLMNR
+  ansible.windows.win_shell: |
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\DNSClient'
+    if (-not (Test-Path $path)) { New-Item -Path $path -Force | Out-Null }
+
+    $current = (Get-ItemProperty -Path $path -Name EnableMulticast -ErrorAction SilentlyContinue).EnableMulticast
+    if ($null -eq $current -or $current -ne 0) {
+      New-ItemProperty -Path $path -Name EnableMulticast -PropertyType DWord -Value 0 -Force | Out-Null
+      Write-Output 'llmnr_disabled'
+    } else {
+      Write-Output 'llmnr_already_disabled'
+    }
+  register: llmnr_result
+  changed_when: "'llmnr_disabled' in (llmnr_result.stdout | default(''))"
+
+- name: Activer les profils de pare-feu Domain/Private/Public
+  ansible.windows.win_shell: Set-NetFirewallProfile -Profile Domain,Private,Public -Enabled True
+  changed_when: false

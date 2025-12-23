@@ -1,0 +1,16 @@
+---
+collections:
+  # Linux (firewalld/selinux)
+  - name: ansible.posix
+    version: "2.1.0"
+  # MariaDB (Zabbix DB)
+  - name: community.mysql
+    version: "4.0.1"
+  # Windows (WinRM + AD)
+  # NOTE: ansible.windows>=2.x requiert ansible-core >= 2.12.
+  # Le script `scripts/admin/run_all.sh` installe donc ansible-core via venv (pip) pour garantir la compatibilité.
+  - name: ansible.windows
+    version: "2.1.0"
+  # Zabbix API (configuration)
+  - name: community.zabbix
+    version: "1.2.0"

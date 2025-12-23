@@ -1,0 +1,81 @@
+- name: Récupérer hostid ({{ zbx_target_host }})
+  ansible.builtin.uri:
+    url: "{{ zabbix_api_url }}"
+    method: POST
+    body_format: json
+    body:
+      jsonrpc: "2.0"
+      method: "host.get"
+      params:
+        output: ["hostid","host"]
+        filter:
+          host: ["{{ zbx_target_host }}"]
+      auth: "{{ zbx_auth }}"
+      id: 100
+    return_content: true
+  register: zbx_host_get
+  no_log: true
+
+- name: Créer l'hôte ({{ zbx_target_host }}) si absent (avec template)
+  ansible.builtin.uri:
+    url: "{{ zabbix_api_url }}"
+    method: POST
+    body_format: json
+    body:
+      jsonrpc: "2.0"
+      method: "host.create"
+      params:
+        host: "{{ zbx_target_host }}"
+        groups:
+          - groupid: "{{ zbx_groupid }}"
+        templates:
+          - templateid: "{{ zbx_target_templates[0] }}"
+        interfaces:
+          - type: 1
+            main: 1
+            useip: 1
+            ip: "{{ zbx_target_ip }}"
+            dns: ""
+            port: "10050"
+      auth: "{{ zbx_auth }}"
+      id: 101
+    return_content: true
+    status_code: 200
+  when:
+    - (zbx_host_get.json.result | length) == 0
+    - (zbx_target_templates | length) > 0
+  register: zbx_host_create_with_tpl
+  failed_when: zbx_host_create_with_tpl.json.error is defined
+  changed_when: true
+  no_log: true
+
+- name: Créer l'hôte ({{ zbx_target_host }}) si absent (sans template)
+  ansible.builtin.uri:
+    url: "{{ zabbix_api_url }}"
+    method: POST
+    body_format: json
+    body:
+      jsonrpc: "2.0"
+      method: "host.create"
+      params:
+        host: "{{ zbx_target_host }}"
+        groups:
+          - groupid: "{{ zbx_groupid }}"
+        interfaces:
+          - type: 1
+            main: 1
+            useip: 1
+            ip: "{{ zbx_target_ip }}"
+            dns: ""
+            port: "10050"
+      auth: "{{ zbx_auth }}"
+      id: 102
+    return_content: true
+    status_code: 200
+  when:
+    - (zbx_host_get.json.result | length) == 0
+    - (zbx_target_templates | length) == 0
+  register: zbx_host_create_no_tpl
+  failed_when: zbx_host_create_no_tpl.json.error is defined
+  changed_when: true
+  no_log: true

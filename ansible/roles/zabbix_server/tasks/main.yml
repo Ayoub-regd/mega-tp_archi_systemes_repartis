@@ -1,0 +1,113 @@
+- name: Installer dépendances
+  ansible.builtin.apt:
+    name:
+      - curl
+      - gnupg
+      - lsb-release
+      - python3-pymysql
+    state: present
+    update_cache: true
+
+- name: Ajouter le dépôt Zabbix
+  ansible.builtin.get_url:
+    url: "{{ zabbix_release_pkg }}"
+    dest: /tmp/zabbix-release.deb
+
+- name: Installer le paquet de dépôt
+  ansible.builtin.apt:
+    deb: /tmp/zabbix-release.deb
+
+- name: Installer Zabbix Server + Front + MariaDB + Agent
+  ansible.builtin.apt:
+    name:
+      - mariadb-server
+      - zabbix-server-mysql
+      - zabbix-frontend-php
+      - zabbix-apache-conf
+      - zabbix-sql-scripts
+      - zabbix-agent
+    state: present
+    update_cache: true
+
+- name: Activer MariaDB
+  ansible.builtin.service:
+    name: mariadb
+    state: started
+    enabled: true
+
+- name: Créer la base MariaDB
+  community.mysql.mysql_db:
+    name: "{{ zabbix_db_name }}"
+    state: present
+    login_unix_socket: /run/mysqld/mysqld.sock
+
+- name: Créer l'utilisateur MariaDB
+  community.mysql.mysql_user:
+    name: "{{ zabbix_db_user }}"
+    password: "{{ zabbix_db_password }}"
+    priv: "{{ zabbix_db_name }}.*:ALL"
+    host: "localhost"
+    state: present
+    login_unix_socket: /run/mysqld/mysqld.sock
+
+- name: Importer le schéma initial
+  ansible.builtin.shell: "zcat /usr/share/zabbix-sql-scripts/mysql/server.sql.gz | mysql --protocol=socket -uroot --socket=/run/mysqld/mysqld.sock {{ zabbix_db_name }}"
+  args:
+    executable: /bin/bash
+    creates: /var/lib/mysql/{{ zabbix_db_name }}/history.ibd
+  no_log: true
+
+- name: Configurer zabbix_server.conf
+  ansible.builtin.lineinfile:
+    path: /etc/zabbix/zabbix_server.conf
+    regexp: "^#?\\s*{{ item.key }}="
+    line: "{{ item.key }}={{ item.value }}"
+    create: false
+    backup: false
+    firstmatch: true
+  loop:
+    - { key: "DBName", value: "{{ zabbix_db_name }}" }
+    - { key: "DBUser", value: "{{ zabbix_db_user }}" }
+    - { key: "DBPassword", value: "{{ zabbix_db_password }}" }
+  notify: Restart zabbix-server
+
+- name: Activer services Zabbix et Apache
+  ansible.builtin.service:
+    name: "{{ item }}"
+    state: started
+    enabled: true
+  loop:
+    - zabbix-server
+    - zabbix-agent
+    - apache2
+
+- name: Configurer le frontend Zabbix (zabbix.conf.php)
+  ansible.builtin.copy:
+    dest: /etc/zabbix/web/zabbix.conf.php
+    owner: www-data
+    group: root
+    mode: "0640"
+    content: |
+      <?php
+      // Zabbix GUI configuration file.
+      $DB['TYPE'] = 'MYSQL';
+      $DB['SERVER'] = 'localhost';
+      $DB['PORT'] = '0';
+      $DB['DATABASE'] = '{{ zabbix_db_name }}';
+      $DB['USER'] = '{{ zabbix_db_user }}';
+      $DB['PASSWORD'] = '{{ zabbix_db_password }}';
+      $DB['SCHEMA'] = '';
+      $DB['ENCRYPTION'] = false;
+      $DB['KEY_FILE'] = '';
+      $DB['CERT_FILE'] = '';
+      $DB['CA_FILE'] = '';
+      $DB['VERIFY_HOST'] = false;
+      $DB['CIPHER_LIST'] = '';
+      $DB['VAULT_URL'] = '';
+      $DB['VAULT_DB_PATH'] = '';
+      $DB['VAULT_TOKEN'] = '';
+      $DB['DOUBLE_IEEE754'] = true;
+      $ZBX_SERVER_NAME = 'MegaTP';
+      $IMAGE_FORMAT_DEFAULT = IMAGE_FORMAT_PNG;
+  no_log: true
+  notify: Restart apache2

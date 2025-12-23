@@ -1,0 +1,16 @@
+.vagrant/
+scripts/logs/
+*.log
+
+# Éviter de publier les supports de cours/sujets (souvent sous droits d'auteur) si le repo est public.
+docs/*.pdf
+docs/*.docx
+docs/*officielle.*
+docs/_mega_tp_subject*
+
+# Sauvegardes locales (peuvent contenir des logs/infos sensibles).
+docs/proofs/_backup_*/
+
+# Captures locales hors rendu (doublons). Les preuves officielles sont dans docs/proofs/.
+zabbix/
+

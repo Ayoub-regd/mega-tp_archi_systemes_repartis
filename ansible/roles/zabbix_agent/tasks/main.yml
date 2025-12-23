@@ -1,0 +1,40 @@
+- name: Installer EPEL (prérequis pour zabbix-agent)
+  ansible.builtin.dnf:
+    name: epel-release
+    state: present
+  failed_when: false
+
+- name: Installer zabbix-agent
+  ansible.builtin.dnf:
+    name: zabbix-agent
+    state: present
+
+- name: Déployer zabbix_agentd.conf (fichier minimal, propre, idempotent)
+  ansible.builtin.copy:
+    dest: "{{ zabbix_agent_conf_path }}"
+    owner: root
+    group: root
+    mode: "0644"
+    backup: true
+    content: |
+      PidFile=/run/zabbix/zabbix_agentd.pid
+      LogFile=/var/log/zabbix/zabbix_agentd.log
+      LogFileSize=0
+
+      Server={{ zabbix_server_ip }}
+      ServerActive={{ zabbix_server_ip }}
+      Hostname={{ inventory_hostname }}
+  notify: Restart zabbix-agent
+
+- name: Ouvrir le port Zabbix Agent
+  ansible.posix.firewalld:
+    port: 10050/tcp
+    permanent: true
+    state: enabled
+    immediate: true
+
+- name: Activer zabbix-agent
+  ansible.builtin.service:
+    name: zabbix-agent
+    state: started
+    enabled: true

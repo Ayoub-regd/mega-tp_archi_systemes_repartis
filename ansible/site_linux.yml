@@ -1,0 +1,12 @@
+- hosts: cluster
+  become: true
+  roles:
+    - security_linux
+    - cluster_ha
+    - zabbix_agent
+
+- hosts: control
+  become: true
+  roles:
+    - zabbix_server
+    - zabbix_config

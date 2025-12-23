@@ -1,0 +1,3 @@
+domain_name: corp.local
+domain_netbios_name: CORP
+domain_safe_mode_password: "MegaTP-DSRM-2025!"

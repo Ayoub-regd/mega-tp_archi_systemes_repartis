@@ -1,0 +1,12 @@
+if ($OpenZabbix) {
+  Write-Info "Ouverture du navigateur pour la capture dashboard Zabbix (manuel)."
+  Write-Host ""
+  Write-Host "1) Ouvre: http://192.168.56.10/zabbix"
+  Write-Host "2) Login: Admin / zabbix"
+  Write-Host "3) Va sur le dashboard: MegaTP - Dashboard"
+  Write-Host "4) Capture écran (Win+Shift+S) et sauvegarde sous: docs/proofs/zabbix_dashboard.png"
+  Write-Host ""
+  Start-Process "http://192.168.56.10/zabbix"
+  Start-Process "http://192.168.56.100/"
+  Start-Process $proofDir
+}

@@ -1,0 +1,32 @@
+﻿Cluster name: ha_cluster
+Cluster Summary:
+  * Stack: corosync (Pacemaker is running)
+  * Current DC: node01 (1) (version 2.1.10-1.el9-5693eaeee) - partition with quorum
+  * Last updated: Mon Dec 22 13:14:06 2025 on node01
+  * Last change:  Mon Dec 22 13:10:20 2025 by root via root on node01
+  * 2 nodes configured
+  * 3 resource instances configured
+
+Node List:
+  * Node node01 (1): online, feature set 3.19.6
+  * Node node02 (2): online, feature set 3.19.6
+
+Full List of Resources:
+  * Resource Group: HA-GRP:
+    * ClusterIP	(ocf:heartbeat:IPaddr2):	 Started node01
+    * Nginx	(systemd:nginx):	 Started node01
+    * Samba	(systemd:smb):	 Started node01
+
+Migration Summary:
+
+Tickets:
+
+PCSD Status:
+  node01: Online
+  node02: Online
+
+Daemon Status:
+  corosync: active/enabled
+  pacemaker: active/enabled
+  pcsd: active/enabled
+

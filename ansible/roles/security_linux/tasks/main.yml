@@ -1,0 +1,84 @@
+- name: Supprimer les mappings loopback des hôtes du lab (évite un bind corosync sur 127.x)
+  ansible.builtin.lineinfile:
+    path: /etc/hosts
+    regexp: '^127\.[0-9]+\.[0-9]+\.[0-9]+\s+.*\b(admin|node01|node02|winsrv|vip)\b.*$'
+    state: absent
+  notify:
+    - Restart corosync
+    - Restart pacemaker
+
+- name: Définir les entrées /etc/hosts du lab (résolution inter-VM)
+  ansible.builtin.blockinfile:
+    path: /etc/hosts
+    marker: "# {mark} MEGATP HOSTS"
+    insertafter: '^127\.0\.0\.1\s'
+    block: |
+      192.168.56.10 admin
+      192.168.56.11 node01
+      192.168.56.12 node02
+      192.168.56.13 winsrv
+      192.168.56.100 vip
+  notify:
+    - Restart corosync
+    - Restart pacemaker
+
+- name: Installer firewalld et utilitaires
+  ansible.builtin.dnf:
+    name:
+      - firewalld
+      - policycoreutils-python-utils
+    state: present
+
+- name: Activer firewalld
+  ansible.builtin.service:
+    name: firewalld
+    state: started
+    enabled: true
+
+- name: Ouvrir uniquement les ports nécessaires
+  ansible.posix.firewalld:
+    port: "{{ item }}"
+    permanent: true
+    state: enabled
+    immediate: true
+  loop:
+    - "22/tcp"
+    - "80/tcp"
+    - "2224/tcp"    # pcsd
+    - "5405/udp"    # corosync
+    - "10050/tcp"   # zabbix-agent
+    - "137-138/udp" # netbios-ns, netbios-dgm (Samba)
+    - "139/tcp"     # netbios-ssn (Samba)
+    - "445/tcp"     # microsoft-ds (Samba)
+
+- name: Désactiver le SSH root
+  ansible.builtin.lineinfile:
+    path: /etc/ssh/sshd_config
+    regexp: "^PermitRootLogin"
+    line: "PermitRootLogin no"
+    create: false
+    backup: true
+  notify: Restart sshd
+
+- name: Installer dnf-automatic (mises à jour de sécurité)
+  ansible.builtin.dnf:
+    name: dnf-automatic
+    state: present
+
+- name: Configurer dnf-automatic (security updates auto)
+  ansible.builtin.lineinfile:
+    path: /etc/dnf/automatic.conf
+    regexp: "^[#\\s]*{{ item.option }}\\s*=.*$"
+    line: "{{ item.option }} = {{ item.value }}"
+    insertafter: "^\\[commands\\]$"
+    firstmatch: true
+    create: false
+  loop:
+    - { option: upgrade_type, value: security }
+    - { option: apply_updates, value: "yes" }
+
+- name: Activer le timer dnf-automatic
+  ansible.builtin.systemd:
+    name: dnf-automatic.timer
+    enabled: true
+    state: started

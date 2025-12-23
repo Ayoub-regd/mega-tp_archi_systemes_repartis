@@ -1,0 +1,194 @@
+- name: Installer dnf-plugins-core (dnf config-manager)
+  ansible.builtin.dnf:
+    name: dnf-plugins-core
+    state: present
+
+- name: Activer les dépôts requis (CRB + HighAvailability)
+  ansible.builtin.command: dnf config-manager --set-enabled crb highavailability
+  changed_when: false
+
+- name: Installer paquets cluster et services applicatifs
+  ansible.builtin.dnf:
+    name:
+      - pcs
+      - pacemaker
+      - corosync
+      - resource-agents
+      - chrony
+      - nginx
+      - samba
+      - samba-common-tools
+    state: present
+
+- name: Activer chronyd
+  ansible.builtin.service:
+    name: chronyd
+    enabled: true
+    state: started
+
+- name: Activer pcsd
+  ansible.builtin.service:
+    name: pcsd
+    enabled: true
+    state: started
+
+- name: Déployer une page Nginx de preuve (permet de voir sur quel nœud est la VIP)
+  ansible.builtin.copy:
+    dest: /usr/share/nginx/html/index.html
+    mode: "0644"
+    owner: root
+    group: root
+    content: |
+      MegaTP HA OK
+      Active node: {{ inventory_hostname }}
+
+- name: Désactiver l'auto-démarrage des services gérés par Pacemaker
+  ansible.builtin.service:
+    name: "{{ item }}"
+    enabled: false
+  loop:
+    - "{{ nginx_service_name }}"
+    - "{{ samba_service_name }}"
+  failed_when: false
+
+- name: Créer le répertoire du partage Samba
+  ansible.builtin.file:
+    path: "{{ samba_share_path }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0777"
+
+- name: Activer le boolean SELinux pour exporter Samba
+  ansible.posix.seboolean:
+    name: samba_export_all_rw
+    state: true
+    persistent: true
+  when: ansible_facts.selinux.status | default('disabled') == 'enabled'
+
+- name: Déployer une configuration Samba minimale
+  ansible.builtin.copy:
+    dest: /etc/samba/smb.conf
+    mode: "0644"
+    owner: root
+    group: root
+    backup: true
+    content: |
+      [global]
+        workgroup = WORKGROUP
+        server role = standalone server
+        log file = /var/log/samba/log.%m
+        max log size = 50
+        map to guest = Bad User
+        usershare allow guests = yes
+
+      [{{ samba_share_name }}]
+        path = {{ samba_share_path }}
+        browseable = yes
+        writable = yes
+        guest ok = yes
+        read only = no
+
+- name: Détecter si le cluster est déjà configuré
+  ansible.builtin.stat:
+    path: /etc/corosync/corosync.conf
+  register: corosync_conf
+  changed_when: false
+
+- name: Déverrouiller le compte hacluster (si nécessaire)
+  ansible.builtin.command: usermod -U hacluster
+  changed_when: false
+  failed_when: false
+  when: not corosync_conf.stat.exists
+
+- name: Définir le mot de passe hacluster (pcsd)
+  ansible.builtin.shell: "echo 'hacluster:{{ hacluster_password }}' | chpasswd"
+  args:
+    executable: /bin/bash
+  changed_when: false
+  no_log: true
+  when: not corosync_conf.stat.exists
+
+- name: Authentifier le cluster entre les nœuds
+  ansible.builtin.command: "pcs host auth {{ groups['cluster'] | join(' ') }} -u hacluster -p {{ hacluster_password }}"
+  run_once: true
+  delegate_to: "{{ groups['cluster'][0] }}"
+  when: not hostvars[groups['cluster'][0]].corosync_conf.stat.exists
+
+- name: Créer le cluster
+  ansible.builtin.command: "pcs cluster setup {{ cluster_name }} {{ groups['cluster'] | join(' ') }} --enable --start --wait=120"
+  run_once: true
+  delegate_to: "{{ groups['cluster'][0] }}"
+  when: not hostvars[groups['cluster'][0]].corosync_conf.stat.exists
+
+- name: Démarrer le cluster
+  ansible.builtin.command: pcs cluster start --all
+  run_once: true
+  delegate_to: "{{ groups['cluster'][0] }}"
+  changed_when: false
+
+- name: Activer le cluster au boot
+  ansible.builtin.command: pcs cluster enable --all
+  run_once: true
+  delegate_to: "{{ groups['cluster'][0] }}"
+  changed_when: false
+
+- name: Désactiver stonith pour le labo VM
+  ansible.builtin.command: pcs property set stonith-enabled=false
+  run_once: true
+  delegate_to: "{{ groups['cluster'][0] }}"
+  changed_when: false
+
+- name: Ignorer le quorum en labo
+  ansible.builtin.command: pcs property set no-quorum-policy=ignore
+  run_once: true
+  delegate_to: "{{ groups['cluster'][0] }}"
+  changed_when: false
+
+- name: Lister les ressources existantes
+  ansible.builtin.command: pcs resource status
+  register: pcs_resources
+  failed_when: false
+  changed_when: false
+  run_once: true
+  delegate_to: "{{ groups['cluster'][0] }}"
+
+- name: Créer la VIP
+  ansible.builtin.command: "pcs resource create ClusterIP ocf:heartbeat:IPaddr2 ip={{ vip_ip }} cidr_netmask={{ vip_cidr_netmask }} op monitor interval=30s"
+  run_once: true
+  delegate_to: "{{ groups['cluster'][0] }}"
+  when: "'ClusterIP' not in pcs_resources.stdout"
+
+- name: Créer le service Nginx
+  ansible.builtin.command: "pcs resource create Nginx systemd:{{ nginx_service_name }} op monitor interval=30s"
+  run_once: true
+  delegate_to: "{{ groups['cluster'][0] }}"
+  when: "'Nginx' not in pcs_resources.stdout"
+
+- name: Créer le service Samba
+  ansible.builtin.command: "pcs resource create Samba systemd:{{ samba_service_name }} op monitor interval=30s"
+  run_once: true
+  delegate_to: "{{ groups['cluster'][0] }}"
+  when: "'Samba' not in pcs_resources.stdout"
+
+- name: Vérifier si le groupe HA-GRP existe
+  ansible.builtin.command: pcs resource group list
+  register: ha_group
+  failed_when: false
+  changed_when: false
+  run_once: true
+  delegate_to: "{{ groups['cluster'][0] }}"
+
+- name: Grouper VIP + Nginx + Samba
+  ansible.builtin.command: pcs resource group add HA-GRP ClusterIP Nginx Samba
+  run_once: true
+  delegate_to: "{{ groups['cluster'][0] }}"
+  when: "'HA-GRP' not in ha_group.stdout"
+
+- name: Nettoyer les fail-counts (lab) pour stabiliser l'état après provisioning
+  ansible.builtin.command: pcs resource cleanup
+  run_once: true
+  delegate_to: "{{ groups['cluster'][0] }}"
+  changed_when: false
+
+

@@ -1,0 +1,16 @@
+- name: Restart sshd
+  ansible.builtin.service:
+    name: sshd
+    state: restarted
+
+- name: Restart corosync
+  ansible.builtin.service:
+    name: corosync
+    state: restarted
+  failed_when: false
+
+- name: Restart pacemaker
+  ansible.builtin.service:
+    name: pacemaker
+    state: restarted
+  failed_when: false

@@ -1,0 +1,20 @@
+- hosts: windows
+  gather_facts: false
+  pre_tasks:
+    - name: Attendre le port WinRM (TCP) avant connexion Ansible
+      ansible.builtin.wait_for:
+        host: "{{ ansible_host }}"
+        port: "{{ ansible_port | default(5986) }}"
+        timeout: 1800
+      delegate_to: localhost
+      vars:
+        ansible_connection: local
+
+    - name: Attendre WinRM (winsrv)
+      ansible.builtin.wait_for_connection:
+        timeout: 1800
+
+    - name: Sanity WinRM (win_ping)
+      ansible.windows.win_ping:
+  roles:
+    - windows_ad

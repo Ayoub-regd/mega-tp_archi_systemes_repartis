@@ -1,0 +1,395 @@
+- name: Attendre l'API Zabbix (apiinfo.version)
+  ansible.builtin.uri:
+    url: "{{ zabbix_api_url }}"
+    method: POST
+    body_format: json
+    body:
+      jsonrpc: "2.0"
+      method: "apiinfo.version"
+      params: {}
+      id: 1
+    return_content: true
+  register: zbx_api_version
+  retries: 30
+  delay: 2
+  until: zbx_api_version.json.result is defined
+
+- name: Login API Zabbix
+  ansible.builtin.uri:
+    url: "{{ zabbix_api_url }}"
+    method: POST
+    body_format: json
+    body:
+      jsonrpc: "2.0"
+      method: "user.login"
+      params:
+        user: "{{ zabbix_api_user }}"
+        password: "{{ zabbix_api_password }}"
+      id: 2
+    return_content: true
+  register: zbx_login
+  no_log: true
+
+- name: Stocker le token API
+  ansible.builtin.set_fact:
+    zbx_auth: "{{ zbx_login.json.result }}"
+  changed_when: false
+  no_log: true
+
+- name: Récupérer le host group MegaTP (si existe)
+  ansible.builtin.uri:
+    url: "{{ zabbix_api_url }}"
+    method: POST
+    body_format: json
+    body:
+      jsonrpc: "2.0"
+      method: "hostgroup.get"
+      params:
+        output: ["groupid","name"]
+        filter:
+          name: ["{{ zabbix_megatp_group_name }}"]
+      auth: "{{ zbx_auth }}"
+      id: 3
+    return_content: true
+  register: zbx_group_get
+  no_log: true
+
+- name: Créer le host group MegaTP (si absent)
+  ansible.builtin.uri:
+    url: "{{ zabbix_api_url }}"
+    method: POST
+    body_format: json
+    body:
+      jsonrpc: "2.0"
+      method: "hostgroup.create"
+      params:
+        name: "{{ zabbix_megatp_group_name }}"
+      auth: "{{ zbx_auth }}"
+      id: 4
+    return_content: true
+  register: zbx_group_create
+  when: (zbx_group_get.json.result | length) == 0
+  failed_when: zbx_group_create.json.error is defined
+  changed_when: true
+  no_log: true
+
+- name: Déterminer le groupid MegaTP
+  ansible.builtin.set_fact:
+    zbx_groupid: >-
+      {{
+        (zbx_group_get.json.result[0].groupid)
+        if (zbx_group_get.json.result | length) > 0
+        else (zbx_group_create.json.result.groupids[0])
+      }}
+  changed_when: false
+  no_log: true
+
+- name: Récupérer le template Linux (id)
+  ansible.builtin.uri:
+    url: "{{ zabbix_api_url }}"
+    method: POST
+    body_format: json
+    body:
+      jsonrpc: "2.0"
+      method: "template.get"
+      params:
+        output: ["templateid","name"]
+        filter:
+          name: ["{{ zabbix_linux_template_name }}"]
+      auth: "{{ zbx_auth }}"
+      id: 5
+    return_content: true
+  register: zbx_tpl_get
+  no_log: true
+
+- name: Vérifier que le template Linux existe
+  ansible.builtin.assert:
+    that:
+      - (zbx_tpl_get.json.result | length) > 0
+    fail_msg: "Template Zabbix introuvable: {{ zabbix_linux_template_name }}"
+
+- name: Stocker le templateid Linux
+  ansible.builtin.set_fact:
+    zbx_tplid_linux: "{{ zbx_tpl_get.json.result[0].templateid }}"
+  changed_when: false
+  no_log: true
+
+- name: Définir les hôtes Linux à créer dans Zabbix
+  ansible.builtin.set_fact:
+    zbx_linux_hosts:
+      - name: node01
+        ip: "{{ hostvars['node01'].ansible_host | default('192.168.56.11') }}"
+      - name: node02
+        ip: "{{ hostvars['node02'].ansible_host | default('192.168.56.12') }}"
+  changed_when: false
+
+- name: Assurer les hôtes Linux (node01/node02) dans Zabbix
+  ansible.builtin.include_tasks: ensure_host.yml
+  loop: "{{ zbx_linux_hosts }}"
+  loop_control:
+    loop_var: zbx_host
+  vars:
+    zbx_target_host: "{{ zbx_host.name }}"
+    zbx_target_ip: "{{ zbx_host.ip }}"
+    zbx_target_templates:
+      - "{{ zbx_tplid_linux }}"
+
+- name: Assurer l'hôte VIP dans Zabbix
+  ansible.builtin.include_tasks: ensure_host.yml
+  vars:
+    zbx_target_host: "{{ zabbix_vip_host }}"
+    zbx_target_ip: "{{ zabbix_vip_ip }}"
+    zbx_target_templates: []
+
+- name: Récupérer hostid VIP
+  ansible.builtin.uri:
+    url: "{{ zabbix_api_url }}"
+    method: POST
+    body_format: json
+    body:
+      jsonrpc: "2.0"
+      method: "host.get"
+      params:
+        output: ["hostid","host"]
+        filter:
+          host: ["{{ zabbix_vip_host }}"]
+      auth: "{{ zbx_auth }}"
+      id: 12
+    return_content: true
+  register: zbx_vip_host_get
+  no_log: true
+
+- name: Stocker hostid VIP
+  ansible.builtin.set_fact:
+    zbx_vip_hostid: "{{ zbx_vip_host_get.json.result[0].hostid }}"
+  changed_when: false
+  no_log: true
+
+- name: Récupérer l'interfaceid VIP
+  ansible.builtin.uri:
+    url: "{{ zabbix_api_url }}"
+    method: POST
+    body_format: json
+    body:
+      jsonrpc: "2.0"
+      method: "hostinterface.get"
+      params:
+        output: ["interfaceid"]
+        hostids: ["{{ zbx_vip_hostid }}"]
+      auth: "{{ zbx_auth }}"
+      id: 13
+    return_content: true
+  register: zbx_vip_iface
+  no_log: true
+
+- name: Stocker interfaceid VIP
+  ansible.builtin.set_fact:
+    zbx_vip_interfaceid: "{{ zbx_vip_iface.json.result[0].interfaceid }}"
+  changed_when: false
+  no_log: true
+
+- name: Vérifier si l'item VIP existe déjà
+  ansible.builtin.uri:
+    url: "{{ zabbix_api_url }}"
+    method: POST
+    body_format: json
+    body:
+      jsonrpc: "2.0"
+      method: "item.get"
+      params:
+        output: ["itemid","name","key_"]
+        hostids: ["{{ zbx_vip_hostid }}"]
+        filter:
+          key_: ["{{ zabbix_vip_item_key }}"]
+      auth: "{{ zbx_auth }}"
+      id: 14
+    return_content: true
+  register: zbx_vip_item_get
+  no_log: true
+
+- name: Créer l'item VIP (HTTP service check)
+  ansible.builtin.uri:
+    url: "{{ zabbix_api_url }}"
+    method: POST
+    body_format: json
+    body:
+      jsonrpc: "2.0"
+      method: "item.create"
+      params:
+        name: "{{ zabbix_vip_item_name }}"
+        key_: "{{ zabbix_vip_item_key }}"
+        hostid: "{{ zbx_vip_hostid }}"
+        type: 3
+        value_type: 3
+        interfaceid: "{{ zbx_vip_interfaceid }}"
+        delay: "30s"
+      auth: "{{ zbx_auth }}"
+      id: 15
+    return_content: true
+  register: zbx_vip_item_create
+  when: (zbx_vip_item_get.json.result | length) == 0
+  failed_when: zbx_vip_item_create.json.error is defined
+  changed_when: true
+  no_log: true
+
+- name: Déterminer l'itemid VIP
+  ansible.builtin.set_fact:
+    zbx_vip_itemid: >-
+      {{
+        (zbx_vip_item_get.json.result[0].itemid)
+        if (zbx_vip_item_get.json.result | length) > 0
+        else (zbx_vip_item_create.json.result.itemids[0])
+      }}
+  changed_when: false
+  no_log: true
+
+- name: Vérifier si le trigger VIP existe déjà
+  ansible.builtin.uri:
+    url: "{{ zabbix_api_url }}"
+    method: POST
+    body_format: json
+    body:
+      jsonrpc: "2.0"
+      method: "trigger.get"
+      params:
+        output: ["triggerid","description"]
+        hostids: ["{{ zbx_vip_hostid }}"]
+        filter:
+          description: ["{{ zabbix_vip_trigger_name }}"]
+      auth: "{{ zbx_auth }}"
+      id: 16
+    return_content: true
+  register: zbx_vip_trigger_get
+  no_log: true
+
+- name: Créer le trigger VIP (alerte disponibilité HTTP)
+  ansible.builtin.uri:
+    url: "{{ zabbix_api_url }}"
+    method: POST
+    body_format: json
+    body:
+      jsonrpc: "2.0"
+      method: "trigger.create"
+      params:
+        description: "{{ zabbix_vip_trigger_name }}"
+        # Syntaxe Zabbix 6.x (nouvelle) : last(/host/key)=0
+        expression: "last(/{{ zabbix_vip_host }}/{{ zabbix_vip_item_key }})=0"
+        priority: 3
+      auth: "{{ zbx_auth }}"
+      id: 17
+    return_content: true
+  register: zbx_vip_trigger_create
+  when: (zbx_vip_trigger_get.json.result | length) == 0
+  failed_when: zbx_vip_trigger_create.json.error is defined
+  changed_when: true
+  no_log: true
+
+- name: Vérifier si le dashboard MegaTP existe déjà
+  ansible.builtin.uri:
+    url: "{{ zabbix_api_url }}"
+    method: POST
+    body_format: json
+    body:
+      jsonrpc: "2.0"
+      method: "dashboard.get"
+      params:
+        output: ["dashboardid","name"]
+        filter:
+          name: ["{{ zabbix_dashboard_name }}"]
+      auth: "{{ zbx_auth }}"
+      id: 18
+    return_content: true
+  register: zbx_dash_get
+  no_log: true
+
+- name: Créer le dashboard MegaTP
+  ansible.builtin.uri:
+    url: "{{ zabbix_api_url }}"
+    method: POST
+    body_format: json
+    body:
+      jsonrpc: "2.0"
+      method: "dashboard.create"
+      params:
+        name: "{{ zabbix_dashboard_name }}"
+        private: 0
+        pages:
+          - name: ""
+            widgets:
+              - type: "hostavail"
+                name: "Host availability"
+                x: 0
+                y: 0
+                width: 12
+                height: 3
+                view_mode: 1
+                fields:
+                  - type: 0
+                    name: "interface_type"
+                    value: "1"
+              - type: "problems"
+                name: "Problems"
+                x: 12
+                y: 0
+                width: 12
+                height: 7
+                view_mode: 0
+                fields:
+                  - type: 0
+                    name: "show"
+                    value: "3"
+              - type: "svggraph"
+                name: "CPU utilization (node01/node02)"
+                x: 0
+                y: 3
+                width: 12
+                height: 4
+                view_mode: 0
+                fields:
+                  - { type: 0, name: "legend", value: "0" }
+                  - { type: 0, name: "show_problems", value: "0" }
+                  - { type: 1, name: "ds.color.0", value: "00BFFF" }
+                  - { type: 1, name: "ds.hosts.0.0", value: "node01" }
+                  - { type: 1, name: "ds.hosts.0.1", value: "node02" }
+                  - { type: 1, name: "ds.items.0.0", value: "*: Linux: CPU utilization" }
+                  - { type: 1, name: "lefty_min", value: "0" }
+                  - { type: 1, name: "lefty_max", value: "100" }
+              - type: "svggraph"
+                name: "Memory utilization (node01/node02)"
+                x: 0
+                y: 7
+                width: 12
+                height: 4
+                view_mode: 0
+                fields:
+                  - { type: 0, name: "legend", value: "0" }
+                  - { type: 0, name: "show_problems", value: "0" }
+                  - { type: 1, name: "ds.color.0", value: "E57373" }
+                  - { type: 1, name: "ds.hosts.0.0", value: "node01" }
+                  - { type: 1, name: "ds.hosts.0.1", value: "node02" }
+                  - { type: 1, name: "ds.items.0.0", value: "*: Linux: Memory utilization" }
+                  - { type: 1, name: "lefty_min", value: "0" }
+                  - { type: 1, name: "lefty_max", value: "100" }
+              - type: "svggraph"
+                name: "VIP HTTP (Nginx via Pacemaker)"
+                x: 12
+                y: 7
+                width: 12
+                height: 4
+                view_mode: 0
+                fields:
+                  - { type: 0, name: "legend", value: "0" }
+                  - { type: 0, name: "show_problems", value: "0" }
+                  - { type: 1, name: "ds.color.0", value: "00C853" }
+                  - { type: 1, name: "ds.hosts.0.0", value: "{{ zabbix_vip_host }}" }
+                  - { type: 1, name: "ds.items.0.0", value: "*: {{ zabbix_vip_item_name }}" }
+                  - { type: 1, name: "lefty_min", value: "0" }
+                  - { type: 1, name: "lefty_max", value: "1" }
+      auth: "{{ zbx_auth }}"
+      id: 19
+    return_content: true
+  register: zbx_dash_create
+  when: (zbx_dash_get.json.result | length) == 0
+  failed_when: zbx_dash_create.json.error is defined
+  changed_when: true
+  no_log: true
