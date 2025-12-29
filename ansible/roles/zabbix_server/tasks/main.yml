@@ -1,10 +1,15 @@
-- name: Installer dépendances
+---
+- name: Installer les dépendances système et outils de diagnostic (Mission "Zero Touch")
   ansible.builtin.apt:
     name:
       - curl
       - gnupg
       - lsb-release
       - python3-pymysql
+      # Outils ajoutés pour l'automatisation des tests et diagnostics
+      - smbclient
+      - cifs-utils
+      - iputils-ping
     state: present
     update_cache: true
 
@@ -21,6 +26,7 @@
   ansible.builtin.apt:
     name:
       - mariadb-server
+      - zabbix-get
       - zabbix-server-mysql
       - zabbix-frontend-php
       - zabbix-apache-conf

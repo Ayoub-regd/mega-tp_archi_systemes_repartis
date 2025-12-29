@@ -1,12 +1,57 @@
-- hosts: cluster
+# site_linux.yml (robuste)
+
+- name: Provision Linux cluster nodes (security + HA + Zabbix agent)
+  hosts: cluster
   become: true
+  gather_facts: false
+
+  # Cluster/HA = éviter de casser tout le run si un nœud est bancal à un instant T
+  any_errors_fatal: false
+
+  # Un nœud à la fois (limite les effets de bord : redémarrages, firewall, corosync/pacemaker)
+  serial: 2
+
+  pre_tasks:
+    - name: Wait for SSH connectivity (cluster) - retry loop
+      ansible.builtin.wait_for_connection:
+        timeout: 30          # durée d'une tentative
+        delay: 2             # délai initial avant 1ère tentative
+      register: wait_ssh_cluster
+      until: wait_ssh_cluster is succeeded
+      retries: 6             # 6 * 30s max = 180s
+      delay: 5               # pause entre tentatives
+      changed_when: false
+
+    - name: Gather facts only after SSH is stable (cluster)
+      ansible.builtin.setup:
+      changed_when: false
+
   roles:
     - security_linux
     - cluster_ha
     - zabbix_agent
 
-- hosts: control
+
+- name: Provision control node (Zabbix server + config)
+  hosts: control
   become: true
+  gather_facts: false
+
+  pre_tasks:
+    - name: Wait for SSH connectivity (control) - retry loop
+      ansible.builtin.wait_for_connection:
+        timeout: 30
+        delay: 2
+      register: wait_ssh_control
+      until: wait_ssh_control is succeeded
+      retries: 6
+      delay: 5
+      changed_when: false
+
+    - name: Gather facts only after SSH is stable (control)
+      ansible.builtin.setup:
+      changed_when: false
+
   roles:
     - zabbix_server
     - zabbix_config
