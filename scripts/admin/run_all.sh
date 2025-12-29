@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
+umask 077
 
 ROOT_DIR="/vagrant"
 ANSIBLE_SRC_DIR="${ROOT_DIR}/ansible"
@@ -16,6 +17,15 @@ MEGATP_FORCE_GALAXY="${MEGATP_FORCE_GALAXY:-0}"
 MEGATP_REFRESH_PACKAGES="${MEGATP_REFRESH_PACKAGES:-0}"
 MEGATP_SKIP_GALAXY="${MEGATP_SKIP_GALAXY:-0}"
 MEGATP_DEBUG="${MEGATP_DEBUG:-0}"
+
+# Windows (winsrv) : le 1er boot peut etre long (sysprep + reboots ADDS).
+# Par defaut on attend jusqu'a ~2h avant d'abandonner (1440 * 5s).
+WINRM_IP="${MEGATP_WINRM_IP:-192.168.56.13}"
+WINRM_PORT="${MEGATP_WINRM_PORT:-5986}"
+MEGATP_WINRM_WAIT_RETRIES="${MEGATP_WINRM_WAIT_RETRIES:-1440}"
+MEGATP_WINRM_WAIT_DELAY_SEC="${MEGATP_WINRM_WAIT_DELAY_SEC:-5}"
+MEGATP_WINRM_PING_RETRIES="${MEGATP_WINRM_PING_RETRIES:-1440}"
+MEGATP_WINRM_PING_DELAY_SEC="${MEGATP_WINRM_PING_DELAY_SEC:-5}"
 
 mkdir -p "${STATE_DIR}" "${LOG_DIR}"
 RUN_ID="$(date +%Y%m%d_%H%M%S)"
@@ -109,14 +119,14 @@ ensure_ansible_venv() {
     rm -rf "${VENV_DIR}" || true
   fi
 
-  # Si une création précédente a échoué (ex: ensurepip absent), le venv peut être incomplet.
+  # Si une creation precedente a echoue (ex: ensurepip absent), le venv peut etre incomplet.
   if [[ -d "${VENV_DIR}" && ! -f "${VENV_DIR}/bin/activate" ]]; then
-    warn "Venv incomplet détecté (activate manquant) -> rebuild ${VENV_DIR}"
+    warn "Venv incomplet detecte (activate manquant) -> rebuild ${VENV_DIR}"
     rm -rf "${VENV_DIR}" || true
   fi
 
   if [[ ! -x "${VENV_DIR}/bin/python" ]]; then
-    info "Création venv Python: ${VENV_DIR}"
+    info "Creation venv Python: ${VENV_DIR}"
     python3 -m venv "${VENV_DIR}"
   fi
 
@@ -155,7 +165,7 @@ galaxy_install_with_retry() {
       return "${rc}"
     fi
 
-    warn "ansible-galaxy a échoué (rc=${rc}). Nouvelle tentative dans ${delay}s..."
+    warn "ansible-galaxy a echoue (rc=${rc}). Nouvelle tentative dans ${delay}s..."
     sleep "${delay}"
     attempt=$((attempt + 1))
     delay=$((delay * 2))
@@ -230,14 +240,16 @@ info "Sync Ansible vers un dossier non world-writable (evite l'ignore ansible.cf
 sudo mkdir -p /home/vagrant/tp
 sudo rsync -a --delete "${ANSIBLE_SRC_DIR}/" "${ANSIBLE_DST_DIR}/"
 sudo chown -R vagrant:vagrant /home/vagrant/tp
+chmod -R go-w /home/vagrant/tp
 chmod -R go-w "${ANSIBLE_DST_DIR}"
+export ANSIBLE_CONFIG="${ANSIBLE_DST_DIR}/ansible.cfg"
 
 info "Installation des collections Ansible (versions pin)"
 if [[ "${MEGATP_SKIP_GALAXY}" == "1" ]]; then
   if collections_present; then
-    warn "MEGATP_SKIP_GALAXY=1 -> skip ansible-galaxy (collections déjà présentes)"
+    warn "MEGATP_SKIP_GALAXY=1 -> skip ansible-galaxy (collections deja presentes)"
   else
-    fatal "MEGATP_SKIP_GALAXY=1 mais collections absentes. Désactive MEGATP_SKIP_GALAXY ou installe les collections."
+    fatal "MEGATP_SKIP_GALAXY=1 mais collections absentes. Desactive MEGATP_SKIP_GALAXY ou installe les collections."
   fi
 else
   req_file="${ANSIBLE_DST_DIR}/collections/requirements.yml"
@@ -245,7 +257,7 @@ else
     req_hash="$(sha256sum "${req_file}" | awk '{print $1}')"
     prev_hash="$(cat "${GALAXY_MARKER}" 2>/dev/null || true)"
     if [[ "${req_hash}" == "${prev_hash}" && "${MEGATP_FORCE_GALAXY}" != "1" ]] && collections_present; then
-      info "requirements.yml inchangé + collections présentes (skip galaxy). Pour forcer: MEGATP_FORCE_GALAXY=1"
+      info "requirements.yml inchange + collections presentes (skip galaxy). Pour forcer: MEGATP_FORCE_GALAXY=1"
     else
       galaxy_args=(-r "${req_file}")
       if [[ "${MEGATP_FORCE_GALAXY}" == "1" ]]; then
@@ -255,7 +267,7 @@ else
       if galaxy_install_with_retry "${galaxy_args[@]}"; then
         echo "${req_hash}" > "${GALAXY_MARKER}"
       else
-        fatal "ansible-galaxy a échoué après retries (Galaxy indisponible ?). Relance ou réessaie plus tard."
+        fatal "ansible-galaxy a echoue apres retries (Galaxy indisponible ?). Relance ou reessaie plus tard."
       fi
     fi
   else
@@ -264,14 +276,14 @@ else
     if [[ "${MEGATP_FORCE_GALAXY}" == "1" ]]; then
       galaxy_args+=(--force)
     fi
-    galaxy_install_with_retry "${galaxy_args[@]}" || fatal "ansible-galaxy best-effort a échoué"
+    galaxy_install_with_retry "${galaxy_args[@]}" || fatal "ansible-galaxy best-effort a echoue"
 
     if [[ "${linux_only}" != "true" ]]; then
       galaxy_args=(ansible.windows:2.1.0 community.zabbix)
       if [[ "${MEGATP_FORCE_GALAXY}" == "1" ]]; then
         galaxy_args+=(--force)
       fi
-      galaxy_install_with_retry "${galaxy_args[@]}" || fatal "ansible-galaxy best-effort (windows) a échoué"
+      galaxy_install_with_retry "${galaxy_args[@]}" || fatal "ansible-galaxy best-effort (windows) a echoue"
     fi
   fi
 fi
@@ -289,6 +301,36 @@ for node in node01 node02; do
   fi
   install -m 600 -o vagrant -g vagrant "${src_key}" "${dst_key}"
 done
+
+# Optionnel (confort) : rendre possible "ssh vagrant@192.168.56.11" depuis admin sans -i.
+# Ce n'est pas requis par Ansible (il utilise ansible_ssh_private_key_file), mais ca aide pour debug/proofs.
+info "Bootstrap SSH direct (admin -> node01/node02) (best-effort)"
+ADMIN_KEY="/home/vagrant/.ssh/id_ed25519"
+if [[ ! -f "${ADMIN_KEY}" ]]; then
+  ssh-keygen -t ed25519 -N "" -f "${ADMIN_KEY}" >/dev/null
+fi
+PUB_KEY="$(cat "${ADMIN_KEY}.pub")"
+
+add_admin_pubkey_to_node() {
+  local ip="${1}"
+  local keyfile="${2}"
+
+  # Envoyer la cle via stdin pour eviter les problemes de quoting.
+  printf '%s\n' "${PUB_KEY}" | ssh \
+    -i "${keyfile}" \
+    -o StrictHostKeyChecking=no \
+    -o UserKnownHostsFile=/dev/null \
+    -o ConnectTimeout=10 \
+    vagrant@"${ip}" \
+    'umask 077; mkdir -p ~/.ssh; touch ~/.ssh/authorized_keys; read -r line; grep -qxF "$line" ~/.ssh/authorized_keys || echo "$line" >> ~/.ssh/authorized_keys; chmod 700 ~/.ssh; chmod 600 ~/.ssh/authorized_keys'
+}
+
+if ! add_admin_pubkey_to_node "192.168.56.11" "/home/vagrant/.ssh/node01.key" >/dev/null 2>&1; then
+  warn "Bootstrap SSH node01: echec (best-effort). Ansible peut quand meme fonctionner."
+fi
+if ! add_admin_pubkey_to_node "192.168.56.12" "/home/vagrant/.ssh/node02.key" >/dev/null 2>&1; then
+  warn "Bootstrap SSH node02: echec (best-effort). Ansible peut quand meme fonctionner."
+fi
 
 cd "${ANSIBLE_DST_DIR}"
 
@@ -317,12 +359,17 @@ info "Validations post-deploiement Linux"
 bash "${ROOT_DIR}/scripts/admin/validate.sh"
 
 if [[ "${linux_only}" == "false" ]]; then
-  info "Attente WinRM (winsrv 192.168.56.13:5986)"
-  if ! wait_for_port "192.168.56.13" 5986 360 5; then
-    fatal "WinRM HTTPS non joignable depuis admin vers 192.168.56.13:5986 (IP host-only Windows / firewall / reboot sysprep)."
+  info "Attente WinRM (winsrv ${WINRM_IP}:${WINRM_PORT})"
+  if ! wait_for_port "${WINRM_IP}" "${WINRM_PORT}" "${MEGATP_WINRM_WAIT_RETRIES}" "${MEGATP_WINRM_WAIT_DELAY_SEC}"; then
+    warn "Diagnostic reseau admin (interfaces/routes):"
+    ip -br address || true
+    ip route || true
+    warn "Diagnostic connectivite (best-effort):"
+    ping -c 2 -W 2 "${WINRM_IP}" || true
+    fatal "WinRM HTTPS non joignable depuis admin vers ${WINRM_IP}:${WINRM_PORT} (1er boot Windows, firewall, IP host-only, reboot sysprep)."
   fi
 
-  if ! wait_for_ansible_ping "winsrv" "win_ping" 360 5; then
+  if ! wait_for_ansible_ping "winsrv" "win_ping" "${MEGATP_WINRM_PING_RETRIES}" "${MEGATP_WINRM_PING_DELAY_SEC}"; then
     warn "WinRM joignable mais Ansible win_ping echoue. Diagnostic detaille..."
     ansible -i hosts winsrv -m win_ping -vvv || true
     fatal "Arret: WinRM OK mais Ansible win_ping KO (auth/transport/inventory)."
