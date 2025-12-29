@@ -14,3 +14,8 @@ docs/proofs/_backup_*/
 # Captures locales hors rendu (doublons). Les preuves officielles sont dans docs/proofs/.
 zabbix/
 
+docs/doc-utiles/
+docs/ancienne-doc-non-utiles/
+docs/proofs/archive/
+log/
+
