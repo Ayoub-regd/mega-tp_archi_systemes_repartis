@@ -56,13 +56,13 @@ function Get-PortListeners {
     }
 
     foreach ($c in $conns) {
-      $pid = $c.OwningProcess
-      $pname = $null
-      try { $pname = (Get-Process -Id $pid -ErrorAction SilentlyContinue).ProcessName } catch {}
+      $processId = $c.OwningProcess
+      $processName = $null
+      try { $processName = (Get-Process -Id $processId -ErrorAction SilentlyContinue).ProcessName } catch {}
       $results += [pscustomobject]@{
         Port        = $port
-        ProcessId   = $pid
-        ProcessName = $pname
+        ProcessId   = $processId
+        ProcessName = $processName
       }
     }
   }

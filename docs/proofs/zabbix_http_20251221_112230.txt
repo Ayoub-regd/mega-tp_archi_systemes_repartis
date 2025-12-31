@@ -1,6 +1,0 @@
-HTTP/1.1 200 OK
-Date: Sun, 21 Dec 2025 10:23:43 GMT
-Server: Apache/2.4.52 (Ubuntu)
-Expires: Thu, 19 Nov 1981 08:52:00 GMT
-Cache-Control: no-store, no-cache, must-revalidate
-

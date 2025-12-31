@@ -1,3 +1,0 @@
-﻿MegaTP HA OK
-Active node: node01
-

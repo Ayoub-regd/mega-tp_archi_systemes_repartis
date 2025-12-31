@@ -8,7 +8,8 @@ Set-StrictMode -Version Latest
 
 $projectRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
 $proofDir = Join-Path $projectRoot 'docs\proofs'
-$archiveDir = Join-Path $proofDir '_archive_local'
+$archiveRoot = Join-Path $proofDir 'archive'
+$archiveDir = Join-Path $archiveRoot '_local'
 
 function Info {
   param([Parameter(Mandatory)] [string]$Message)
@@ -78,9 +79,7 @@ if (-not (Test-Path $proofDir)) {
   Ensure-Dir $proofDir
 }
 
-# 1) Normaliser les 3 preuves attendues par README (noms stables)
-
-$archiveRoot = Join-Path $proofDir 'archive'
+# 1) Normaliser les preuves attendues par README (noms stables)
 
 $pcsNewest = Select-Newest @(
   (Get-NewestFile -Dir $proofDir -Filter 'pcs_status_*.png')
@@ -93,6 +92,13 @@ $vipNewest = Select-Newest @(
   (Get-NewestFileRecursive -Dir $archiveRoot -Filter 'vip_page_*.png')
 )
 if ($vipNewest) { [void](Copy-IfNewer -SourcePath $vipNewest.FullName -DestPath (Join-Path $proofDir 'vip_page.png')) }
+
+# Zabbix HTTP: check d'accessibilite UI (preuve technique rapide).
+$zHttpNewest = Select-Newest @(
+  (Get-NewestFile -Dir $proofDir -Filter 'zabbix_http_*.png')
+  (Get-NewestFileRecursive -Dir $archiveRoot -Filter 'zabbix_http_*.png')
+)
+if ($zHttpNewest) { [void](Copy-IfNewer -SourcePath $zHttpNewest.FullName -DestPath (Join-Path $proofDir 'zabbix_http.png')) }
 
 # Zabbix dashboard: soit dans docs\proofs\, soit dans docs\proofs\zabbix\
 $zDashRoot = Join-Path $proofDir 'zabbix_dashboard.png'
@@ -114,7 +120,7 @@ if ($Archive) {
   foreach ($p in $patterns) {
     foreach ($f in (Get-ChildItem -Path $proofDir -File -Filter $p -ErrorAction SilentlyContinue)) {
       $target = Join-Path $dest $f.Name
-      Info "ARCHIVE: $($f.Name) -> _archive_local\\$runId\\$($f.Name)"
+      Info "ARCHIVE: $($f.Name) -> archive\\_local\\$runId\\$($f.Name)"
       if (-not $DryRun) {
         Move-Item -Force $f.FullName $target
       }
@@ -127,7 +133,7 @@ if ($Archive) {
     Ensure-Dir $zDest
     foreach ($f in (Get-ChildItem -Path $zDir -File -ErrorAction SilentlyContinue)) {
       $target = Join-Path $zDest $f.Name
-      Info "ARCHIVE: zabbix\\$($f.Name) -> _archive_local\\$runId\\zabbix\\$($f.Name)"
+      Info "ARCHIVE: zabbix\\$($f.Name) -> archive\\_local\\$runId\\zabbix\\$($f.Name)"
       if (-not $DryRun) {
         Move-Item -Force $f.FullName $target
       }
@@ -137,6 +143,6 @@ if ($Archive) {
 
 Info "Etat final attendu (README):"
 Get-ChildItem -Path $proofDir -File -Filter '*.png' |
-  Where-Object { $_.Name -in @('pcs_status.png','vip_page.png','zabbix_dashboard.png') } |
+  Where-Object { $_.Name -in @('pcs_status.png','vip_page.png','zabbix_http.png','zabbix_dashboard.png') } |
   Select-Object Name,LastWriteTime,Length |
   Format-Table -AutoSize

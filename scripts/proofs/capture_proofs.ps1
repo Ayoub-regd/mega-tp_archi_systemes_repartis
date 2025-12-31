@@ -492,6 +492,7 @@ $hadFailure = $hadFailure -or (-not (Invoke-CaptureStep -Name 'Zabbix UI (HTTP)'
   $zbxPng = Join-Path $runDir "zabbix_http_$runId.png"
   Export-TextFile -Path $zbxTxt -Content $zbxOut
   Export-TextAsPng -Path $zbxPng -Text $zbxOut -Title "Zabbix: HEAD $zbxUrl ($runId)"
+  Copy-Item -Force $zbxPng (Join-Path $proofDir 'zabbix_http.png')
 }))
 
 if ($OpenZabbix) {

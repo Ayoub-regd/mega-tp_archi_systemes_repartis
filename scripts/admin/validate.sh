@@ -31,11 +31,11 @@ vip_ip="${vip_ip:-192.168.56.100}"
 vip_check_cmd="ip -4 -o addr show | grep -Fq '${vip_ip}/' && echo HAS_VIP || echo NO_VIP"
 samba_share_name="${SMB_SHARE_NAME:-public}"
 
-echo "[TEST] Connectivité Ansible -> cluster"
+echo "[TEST] Connectivite Ansible -> cluster"
 "${ANSIBLE_CMD}" -i hosts cluster -m ping >/dev/null
 echo "  OK"
 
-echo "[TEST] Services système HA (pcsd/corosync/pacemaker)"
+echo "[TEST] Services systeme HA (pcsd/corosync/pacemaker)"
 "${ANSIBLE_CMD}" -i hosts cluster -b -m shell -a "systemctl is-active pcsd && systemctl is-active corosync && systemctl is-active pacemaker" >/dev/null
 echo "  OK"
 
@@ -44,13 +44,13 @@ echo "[TEST] Cluster stable (2 noeuds online, pas de OFFLINE)"
 "${ANSIBLE_CMD}" -i hosts node01 -b -m shell -a "pcs status --full | grep -q 'HA-GRP'" >/dev/null
 echo "  OK"
 
-echo "[TEST] VIP présente sur un seul noeud"
+echo "[TEST] VIP presente sur un seul noeud"
 vip_report="$("${ANSIBLE_CMD}" -i hosts cluster -b -m shell -a "${vip_check_cmd}" -o | tr -d '\r')"
 echo "${vip_report}"
 
 vip_count="$(echo "${vip_report}" | grep -c 'HAS_VIP' || true)"
 if [[ "${vip_count}" -ne 1 ]]; then
-  echo "[FAIL] VIP ${vip_ip} attendue sur 1 seul noeud, trouvée: ${vip_count}" >&2
+  echo "[FAIL] VIP ${vip_ip} attendue sur 1 seul noeud, trouvee: ${vip_count}" >&2
   exit 2
 fi
 echo "  OK"
@@ -97,11 +97,11 @@ if [[ "${failover_test}" == "true" ]]; then
     fi
   done
 
-  # Toujours rétablir le noeud, même en cas d'échec du test
+  # Toujours retablir le noeud, meme en cas d'echec du test
   "${ANSIBLE_CMD}" -i hosts node01 -b -m shell -a "pcs node unstandby ${vip_holder}" >/dev/null || true
 
   if [[ "${moved}" != "true" ]]; then
-    echo "[FAIL] La VIP n'a pas basculé vers ${other_node} dans le délai attendu" >&2
+    echo "[FAIL] La VIP n'a pas bascule vers ${other_node} dans le delai attendu" >&2
     exit 2
   fi
 
@@ -123,13 +123,13 @@ if [[ "${reboot_test}" == "true" ]]; then
   echo "  -> reboot ${passive_node} (VIP reste sur ${vip_holder})"
   "${ANSIBLE_CMD}" -i hosts "${passive_node}" -b -m reboot -a "reboot_timeout=600" >/dev/null
 
-  echo "  -> vérification cluster après reboot"
+  echo "  -> verification cluster apres reboot"
   "${ANSIBLE_CMD}" -i hosts node01 -b -m shell -a "pcs status --full | grep -Eq '^\\s*\\* Node node01 .*: online' && pcs status --full | grep -Eq '^\\s*\\* Node node02 .*: online' && ! pcs status --full | grep -q 'OFFLINE'" >/dev/null
 
   vip_report="$("${ANSIBLE_CMD}" -i hosts cluster -b -m shell -a "${vip_check_cmd}" -o | tr -d '\r')"
   vip_count="$(echo "${vip_report}" | grep -c 'HAS_VIP' || true)"
   if [[ "${vip_count}" -ne 1 ]]; then
-    echo "[FAIL] VIP ${vip_ip} dupliquée après reboot (count=${vip_count})" >&2
+    echo "[FAIL] VIP ${vip_ip} dupliquee apres reboot (count=${vip_count})" >&2
     exit 2
   fi
   echo "  OK"
@@ -152,7 +152,7 @@ echo "  OK"
 echo "[TEST] Zabbix server (services + HTTP)"
 sudo systemctl is-active mariadb apache2 zabbix-server >/dev/null
 if [[ ! -f /etc/zabbix/web/zabbix.conf.php ]]; then
-  echo "[FAIL] Zabbix frontend non configuré: /etc/zabbix/web/zabbix.conf.php manquant" >&2
+  echo "[FAIL] Zabbix frontend non configure: /etc/zabbix/web/zabbix.conf.php manquant" >&2
   exit 2
 fi
 code="$(curl -sS -o /dev/null -w '%{http_code}' http://localhost/zabbix/ || true)"
@@ -220,8 +220,8 @@ missing = {"node01", "node02", vip_host} - host_names
 if missing:
     raise RuntimeError(f"Hosts manquants dans Zabbix: {sorted(missing)}")
 
-# Zabbix met du temps à rafraîchir l'état "available" après un reboot.
-# On attend un peu avant d'échouer, sinon on a des faux négatifs.
+# Zabbix met du temps a rafraichir l'etat "available" apres un reboot.
+# On attend un peu avant d'echouer, sinon on a des faux negatifs.
 deadline = time.time() + max_wait
 while True:
     bad = []
@@ -234,7 +234,7 @@ while True:
         break
     if time.time() >= deadline:
         details = ", ".join([f"{name}(available={avail}, err={err!r})" for name, avail, err in bad])
-        raise RuntimeError(f"Agents Zabbix indisponibles après attente ({max_wait}s): {details}")
+        raise RuntimeError(f"Agents Zabbix indisponibles apres attente ({max_wait}s): {details}")
     time.sleep(poll_interval)
     hosts = get_hosts()
 
@@ -263,4 +263,4 @@ echo "[TEST] Zabbix agents (services + port)"
 "${ANSIBLE_CMD}" -i hosts cluster -b -m shell -a "systemctl is-active zabbix-agent && ss -lntp | grep -q ':10050'" >/dev/null
 echo "  OK"
 
-echo "[OK] Validations Linux terminées"
+echo "[OK] Validations Linux terminees"
